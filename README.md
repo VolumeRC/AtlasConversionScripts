@@ -3,15 +3,18 @@ Atlas Conversion Scripts
 
 Introduction
 -------------
-This repository contains some scripts to help converting a 3D volume texture into a WebGL compatible 2D atlas.
+This repository contains some scripts to help converting a 3D volume data into a WebGL compatible 2D texture atlas.
 
-Scripts
---------
-The scripts are dependant on the input volume data type.
-*	Converting a PNG image folder
-*	Converting a DICOM image folder
-*	Converting a RAW image folder 
-*	Converting your own data type
+The scripts allow you to generate an atlas from different types of volume data sources. This are the supported data types:
+*	Common image formats like __PNG__, __JPEG__ ... which are supported with PIL
+*	__DICOM__
+*	__RAW__  
+
+Also, there is a template script you can use to adapt it to your own volume data type.  
+
+Wiki
+----
+You can found the necessary information about how you can use the scripts and how to visualize the atlas on the [wiki](https://github.com/VolumeRC/AtlasConversionScripts/wiki).
 
 Related Publication
 -------------------
