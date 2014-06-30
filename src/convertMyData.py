@@ -23,6 +23,21 @@ sizeOfRaw = (512, 512)
 #This determines if the endianness should be reversed
 rawByteSwap = True
 
+def normalize(inputData):
+	old_min = inputData.min()
+	old_range = inputData.max()-old_min
+	return (inputData-old_min)/old_range
+
+#This function calculates the gradient from a 3 dimensional numpy array
+def calculateGradient(arr):
+	r = np.zeros(arr.shape)
+	g = np.zeros(arr.shape)
+	b = np.zeros(arr.shape)
+	ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=1, order=1, output=r)
+	ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=0, order=1, output=g)
+	ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=2, order=1, output=b)
+	return normalize(np.concatenate((r[...,np.newaxis],g[...,np.newaxis],b[...,np.newaxis]),axis=3))
+
 #Write here your own load data version here ...
 def loadMyData(filename):
 	myImageSize = (32, 32)
@@ -58,6 +73,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=loadMyData):
 		imout.paste(im, box)
 		i+=1
 		print "processed slice  : "+str(i)+"/"+str(numberOfSlices) #filename
+	
 	return imout, size, numberOfSlices, slicesPerAxis
 
 #This functions takes a (tiled) image and writes it to a png file with base filename outputFilename.
@@ -112,6 +128,16 @@ def main(argv=None):
 
 	#Convert into a tiled image
 	if len(filenames) > 0:
+		try:
+			global ndimage, misc
+			global np
+			import numpy as np
+			from scipy import ndimage, misc
+			gradient = True
+		except ImportError:
+			print "You need SciPy and Numpy (http://numpy.scipy.org/) to also calculate the gradient!"
+			gradient = False
+			
 		imgTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenames,loadMyData)
 	else:
 		print "No files found in that folder, check your parameters and your load function."
