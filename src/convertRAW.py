@@ -22,13 +22,20 @@ try:
 	from PIL import Image 
 except ImportError:
 	import Image
+#Scipy dependencies
+try:
+	import numpy as np
+	from scipy import ndimage, misc
+except ImportError:
+	print "You need SciPy and Numpy (http://numpy.scipy.org/)!"
 
 #This is the default size when loading a Raw image
 sizeOfRaw = (256, 256)
 #Number of slices per RAW image
 slices = 128
 #This determines if the endianness should be reversed
-rawByteSwap = True
+rawByteSwap = False
+
 #Standard deviation for Gaussian kernel 
 sigmaValue = 1
 
@@ -48,6 +55,7 @@ def calculateGradient(arr):
 	ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=2, order=1, output=b)
 	return normalize(np.concatenate((r[...,np.newaxis],g[...,np.newaxis],b[...,np.newaxis]),axis=3))
 
+#This function takes a filename and returns a compatible multidemensional array
 def loadRAW2Numpy(filename):
 	f = open(filename, "rb")
 	try:
@@ -66,64 +74,35 @@ def loadRAW2Numpy(filename):
 	finally:
 		f.close()
 
-#This function loads a RAW file and returns a compatible Image object
-def loadRAW(filename):
-	im = Image.new("L", (sizeOfRaw[0], sizeOfRaw[1]))
-	putpix = im.im.putpixel
-	a = array.array("H")
-	with open(filename, "rb") as f:
-		a.fromfile(f, sizeOfRaw[0]*sizeOfRaw[1])
-	
-	if rawByteSwap:
-		a.byteswap()
-
-	for y in range(sizeOfRaw[1]):
-		for x in range(sizeOfRaw[0]):
-			val = a[x+y*sizeOfRaw[1]] / 16
-			if val > 255:
-				val = 0
-			putpix((x,y), val)
-	return im
-
 #This function uses the images retrieved with loadImgFunction (whould return a PIL.Image) and
 #	writes them as tiles within a new square Image. 
 #	Returns a set of Image, size of a slice, number of slices and number of slices per axis
-def ImageSlices2TiledImage(filenames, loadImgFunction=loadRAW, cGradient=False):
+def ImageSlices2TiledImage(filenames, loadImgFunction=loadRAW2Numpy):
 	filenames=sorted(filenames)
 	print "Desired load function=", loadImgFunction.__name__
-	size = loadImgFunction(filenames[0]).size
-	numberOfSlices = len(filenames)
+	size = sizeOfRaw
+	numberOfSlices = slices*len(filenames)
 	slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlices)))
-	imout = Image.new("L", (size[0]*slicesPerAxis, size[1]*slicesPerAxis))
 
-	i = 0
-	for filename in filenames:
-		im = loadImgFunction(filename)
-		
+	data = loadRAW2Numpy(filenames[0])
+	for f in range(1, len(filenames)):
+		data = np.dstack((data, loadRAW2Numpy(filenames[f])))
+	gradientData = calculateGradient(data)
+
+	atlasArray = np.zeros((size[0]*slicesPerAxis, size[1]*slicesPerAxis))
+	atlasGradientArray = np.zeros((size[0]*slicesPerAxis, size[1]*slicesPerAxis, 3))
+
+	for i in range(0, numberOfSlices):
 		row = int( (math.floor(i/slicesPerAxis)) * size[0] )
 		col = int( (i%slicesPerAxis) * size[1] )
 
-		box = ( int(col), int(row), int(col+size[0]), int(row+size[1]) )
-		imout.paste(im, box)
-		i+=1
-		print "processed slice  : "+str(i)+"/"+str(numberOfSlices) #filename
+		box = ( int(row), int(col), int(row+size[0]), int(col+size[1]) )
+		atlasArray[box[0]:box[2],box[1]:box[3]] = data[:,:,i]
+		atlasGradientArray[box[0]:box[2],box[1]:box[3],:] = gradientData[:,:,i,:]
+		print "processed slice  : "+str(i+1)+"/"+str(numberOfSlices) #filename
 	
-	if cGradient:
-		data = loadRAW2Numpy(filenames[0])
-		for f in range(1, len(filenames)):
-			data = np.dstack((data, loadRAW2Numpy(filenames[f])))
-
-		gradientData = calculateGradient(data)
-		atlasArray = np.zeros((size[0]*slicesPerAxis, size[1]*slicesPerAxis, 3))
-		
-		for i in range(0, numberOfSlices):
-			row = int( (math.floor(i/slicesPerAxis)) * size[0] )
-			col = int( (i%slicesPerAxis) * size[1] )
-
-			box = ( int(row), int(col), int(row+size[0]), int(col+size[1]) )
-			atlasArray[box[0]:box[2],box[1]:box[3],:] = gradientData[:,:,i,:]
-
-		gradient = misc.toimage(atlasArray)
+	imout = misc.toimage(atlasArray, mode="L")
+	gradient = misc.toimage(atlasGradientArray, mode="RGB")
 
 	return imout, gradient, size, numberOfSlices, slicesPerAxis
 
@@ -185,20 +164,8 @@ def main(argv=None):
 	#Convert into a tiled image
 	filenamesRAW = listdir_fullpath(argv[1])
 	if len(filenamesRAW):
-		try:
-			global ndimage, misc
-			global np
-			import numpy as np
-			from scipy import ndimage, misc
-			gradient = True
-		except ImportError:
-			print "You need SciPy and Numpy (http://numpy.scipy.org/) to also calculate the gradient!"
-			gradient = False
 		#From RAW files
-		if gradient:
-			imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesRAW,loadRAW, True)
-		else:
-			imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesRAW,loadRAW)
+		imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesRAW,loadRAW2Numpy)
 	else:
 		print "No files found in that folder, check your parameters or contact the authors :)."
 		return 2
