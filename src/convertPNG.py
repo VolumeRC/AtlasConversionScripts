@@ -46,7 +46,23 @@ def calculateGradient(arr):
 
 #This function simply loads a PNG file and returns a compatible Image object
 def loadPNG(filename):
-	return Image.open(filename)
+	im = Image.open(filename)
+	width, height = im.size
+	if (width == height):
+		return im
+	else:
+		mode = im.mode
+		if len(mode) == 1:  # L, 1
+			new_background = (0)
+		if len(mode) == 3:  # RGB
+			new_background = (0, 0, 0)
+		if len(mode) == 4:  # RGBA, CMYK
+			new_background = (0, 0, 0, 0)
+		new_resolution = max(width, height)
+		offset = ((new_resolution - width) / 2, (new_resolution - height) / 2)
+		t_im = Image.new(mode, (new_resolution, new_resolution), new_background)
+		t_im.paste(im, offset)
+		return t_im
 
 #This function uses the images retrieved with loadImgFunction (whould return a PIL.Image) and
 #	writes them as tiles within a new square Image. 
@@ -72,10 +88,13 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=loadPNG, cGradient=False):
 		i+=1
 		print "processed slice  : "+str(i)+"/"+str(numberOfSlices) #filename
 	
+	gradient = None
 	if cGradient:
-		data = ndimage.imread(filenames[0], flatten=True)
+		#data = ndimage.imread(filenames[0], flatten=True)
+		data = loadImgFunction(filenames[0])
 		for f in range(1, len(filenames)):
-			data = np.dstack((data, ndimage.imread(filenames[f], flatten=True)))
+			#data = np.dstack((data, ndimage.imread(filenames[f], flatten=True)))
+			data = np.dstack((data, loadImgFunction(filenames[f])))
 
 		gradientData = calculateGradient(data)
 		atlasArray = np.zeros((size[0]*slicesPerAxis, size[1]*slicesPerAxis, 3))
@@ -129,7 +148,7 @@ def WriteVersions(tileImage, tileGradient, outputFilename,dimensions=[8192,4096,
 
 #This function lists the files within a given directory dir
 def listdir_fullpath(d):
-    return [os.path.join(d, f) for f in os.listdir(d)]
+	return [os.path.join(d, f) for f in os.listdir(d)]
 
 #This is the main program, it takes at least 2 arguments <InputFolder> and <OutputFilename>
 def main(argv=None):
@@ -159,7 +178,7 @@ def main(argv=None):
 		except ImportError:
 			print "You need SciPy and Numpy (http://numpy.scipy.org/) to also calculate the gradient!"
 			gradient = False
-		
+
 		#From png files
 		if gradient:
 			imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesPNG,loadPNG, True)
