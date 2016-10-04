@@ -33,33 +33,14 @@ rawByteSwap = True
 # Standard deviation for Gaussian kernel 
 sigmaValue = 1
 
+def decr(x, y):
+    return x - y
 
-def normalize(input_data):
-    old_min = input_data.min()
-    r = input_data.max() - old_min
-    t0 = input_data - old_min
-    result = t0 / r
-    return result
-
-def normalize_old(input_data):
-    old_min = input_data.min()
-    old_range = input_data.max() - old_min
-    return (input_data - old_min) / old_range
-
-
-# This function calculates the gradient from a 3 dimensional numpy array
-def calculate_gradient_old(arr):
-    r = np.zeros(arr.shape)
-    g = np.zeros(arr.shape)
-    b = np.zeros(arr.shape)
-    print "Generated empty arrays"
-    ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=1, order=1, output=r)
-    print "Generated R gradient"
-    ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=0, order=1, output=g)
-    print "Generated G gradient"
-    ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=2, order=1, output=b)
-    print "Generated B gradient"
-    return normalize(np.concatenate((r[..., np.newaxis], g[..., np.newaxis], b[..., np.newaxis]), axis=3))
+def normalize(block):
+    old_min = delayed(block.min())
+    r = delayed(decr)(block.max(), old_min)
+    t0 = decr(block, old_min.compute())
+    return t0 / r.compute()
 
 def gaussian_filter(block, axis):
     return ndimage.gaussian_filter1d(block, sigma=sigmaValue, axis=axis, order=1)
@@ -67,7 +48,6 @@ def gaussian_filter(block, axis):
 # This function calculates the gradient from a 3 dimensional numpy array
 def calculate_gradient(arr):
     axises = [1, 0, 2]  # Match RGB
-    arr = arr.astype(np.float32)
     g = da.ghost.ghost(arr, depth={0: 2, 1: 2, 2: 1},  boundary={0: 'periodic', 1: 'periodic', 2: 'reflect'})
     derivatives = [g.map_blocks(gaussian_filter, axis) for axis in axises]
     derivatives = [da.ghost.trim_internal(d, {0: 2, 1: 2, 2: 1}) for d in derivatives]
@@ -133,7 +113,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
         #     data = da.stack((data, loadImgFunction(filenames[f])))
 
         print "Loading the data..."
-        image_list = [da.from_array(np.array(loadImgFunction(f), dtype='uint8'), chunks=256) for f in filenames]
+        image_list = [da.from_array(np.array(loadImgFunction(f), dtype='uint8'), chunks=size) for f in filenames]
         data = da.stack(image_list, axis=-1)
         cpus = cpu_count()
         chunk_size = [x//cpus for x in data.shape]
@@ -141,6 +121,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
         data = da.rechunk(data, chunks=chunk_size)
         print "Loading complete. Data size: "+str(data.shape)
         print "Computing the gradient..."
+        data = data.astype(np.float32)
         gradientData = calculate_gradient(data)
         # Normalize to image values RGB values
         gradientData = gradientData * 255
@@ -249,9 +230,10 @@ def main(argv=None):
     if len(filenamesPNG) > 0:
         try:
             global ndimage, misc
-            global np, da
+            global np, da, delayed
             import numpy as np
             import dask.array as da
+            from dask import delayed
             from scipy import ndimage, misc
 
             gradient = True
