@@ -11,15 +11,11 @@ http://demos.vicomtech.org
 Contact mailto:volumerendering@vicomtech.org
 """
 
-import os, errno
+import os
+import errno
 import sys
-# import getopt
 import math
 from multiprocessing import cpu_count
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import h5py
-# import array
 # this is required to manage the images
 try:
     from PIL import Image
@@ -128,7 +124,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
         gradientData = gradientData.astype(np.uint8)
         # Keep the RGB information separated
         channels = ['/r', '/g', '/b']
-        [da.to_hdf5('myfile.hdf5', c, gradientData[:, :, :, i]) for i, c in enumerate(channels)]
+        [da.to_hdf5('gradient_cache.hdf5', c, gradientData[:, :, :, i]) for i, c in enumerate(channels)]
         #plt.imshow(gradientData[:, :, 2], cmap=cm.get_cmap("gray"))
         #plt.show()
         #return imout, gradient, size, numberOfSlices, slicesPerAxis
@@ -145,7 +141,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
             boxes.append(box)
 
         channels = ['/r', '/g', '/b']
-        dsets = [h5py.File('myfile.hdf5')[c] for c in channels]
+        dsets = [h5py.File('gradient_cache.hdf5')[c] for c in channels]
         arrays = [da.from_array(dset, chunks=chunk_size) for dset in dsets]
         gradient_data = da.stack(arrays, axis=-1)
         for ind, box in enumerate(boxes):
@@ -154,14 +150,12 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
             gradient.paste(im, box)
             print "processed gradient slice  : " + str(ind) + "/" + str(numberOfSlices)  # filename
 
-            #atlasArray[box[0]:box[2], box[1]:box[3], :] = gradientData[:, :, i, :]
-            #im = gradientData[:, :, i, :]
-            #g = gradientData[:, :, i, :]*255
-            #g.compute()
-            #im = Image.fromarray(np.uint8(gradientData[:, :, i, :]*255))
-            #gradient.paste(im, box)
-
-        #gradient = misc.toimage(atlasArray)
+        # Remove cache file
+        try:
+            os.remove('gradient_cache.hdf5')
+        except OSError as e:  # this would be "except OSError, e:" before Python 2.6
+            if e.errno != errno.ENOENT:  # errno.ENOENT = no such file or directory
+                raise  # re-raise exception if a different error occured
 
     return imout, gradient, size, numberOfSlices, slicesPerAxis
 
@@ -230,9 +224,11 @@ def main(argv=None):
     if len(filenamesPNG) > 0:
         try:
             global ndimage, misc
+            global h5py
             global np, da, delayed
             import numpy as np
             import dask.array as da
+            import h5py
             from dask import delayed
             from scipy import ndimage, misc
 
