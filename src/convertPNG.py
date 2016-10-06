@@ -16,6 +16,7 @@ import errno
 import sys
 import math
 from multiprocessing import cpu_count
+import tempfile
 # this is required to manage the images
 try:
     from PIL import Image
@@ -102,12 +103,6 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
 
     gradient = None
     if cGradient:
-        # data = ndimage.imread(filenames[0], flatten=True)
-        # data = loadImgFunction(filenames[0])
-        # for f in range(1, len(filenames)):
-        #     # data = np.dstack((data, ndimage.imread(filenames[f], flatten=True)))
-        #     data = da.stack((data, loadImgFunction(filenames[f])))
-
         print "Loading the data..."
         image_list = [da.from_array(np.array(loadImgFunction(f), dtype='uint8'), chunks=size) for f in filenames]
         data = da.stack(image_list, axis=-1)
@@ -118,47 +113,50 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
         print "Loading complete. Data size: "+str(data.shape)
         print "Computing the gradient..."
         data = data.astype(np.float32)
-        gradientData = calculate_gradient(data)
+        gradient_data = calculate_gradient(data)
         # Normalize to image values RGB values
-        gradientData = gradientData * 255
-        gradientData = gradientData.astype(np.uint8)
-        # Keep the RGB information separated
+        gradient_data = gradient_data * 255
+        gradient_data = gradient_data.astype(np.uint8)
+        # Keep the RGB information separated, uses less RAM memory
         channels = ['/r', '/g', '/b']
-        [da.to_hdf5('gradient_cache.hdf5', c, gradientData[:, :, :, i]) for i, c in enumerate(channels)]
-        #plt.imshow(gradientData[:, :, 2], cmap=cm.get_cmap("gray"))
-        #plt.show()
-        #return imout, gradient, size, numberOfSlices, slicesPerAxis
-        #atlasArray = da.from_array(np.zeros((size[0] * slicesPerAxis, size[1] * slicesPerAxis, 3)), chunks=512)
+        f = tempfile.NamedTemporaryFile(delete=False)
+        [da.to_hdf5(f.name, c, gradient_data[:, :, :, i]) for i, c in enumerate(channels)]
         # Create atlas image
         gradient = Image.new("RGB", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
 
-        boxes = []
-        for i in range(0, numberOfSlices):
-            row = int((math.floor(i / slicesPerAxis)) * size[0])
-            col = int((i % slicesPerAxis) * size[1])
-
-            box = (int(col), int(row), int(col + size[0]), int(row + size[1]))
-            boxes.append(box)
-
         channels = ['/r', '/g', '/b']
-        handle = h5py.File('gradient_cache.hdf5')
+        handle = h5py.File(f.name)
         dsets = [handle[c] for c in channels]
         arrays = [da.from_array(dset, chunks=chunk_size) for dset in dsets]
         gradient_data = da.stack(arrays, axis=-1)
-        for ind, box in enumerate(boxes):
-            s = gradient_data[:, :, ind, :]
+
+        for i in range(0, numberOfSlices):
+            row = int((math.floor(i / slicesPerAxis)) * size[0])
+            col = int((i % slicesPerAxis) * size[1])
+            box = (int(col), int(row), int(col + size[0]), int(row + size[1]))
+
+            s = gradient_data[:, :, i, :]
             im = Image.fromarray(np.array(s))
             gradient.paste(im, box)
-            print "processed gradient slice  : " + str(ind) + "/" + str(numberOfSlices)  # filename
+            print "processed gradient slice  : " + str(i) + "/" + str(numberOfSlices)  # filename
 
-        handle.close()
-
+        try:
+            handle.close()
+            f.close()
+        finally:
+            try:
+                os.remove(f.name)
+            except OSError as e:  # this would be "except OSError, e:" before Python 2.6
+                if e.errno != errno.ENOENT:  # errno.ENOENT = no such file or directory
+                    raise  # re-raise exception if a different error occurred
     return imout, gradient, size, numberOfSlices, slicesPerAxis
 
 
 # This functions takes a (tiled) image and writes it to a png file with base filename outputFilename.
 # It also writes several versions in different sizes determined by dimensions
-def WriteVersions(tileImage, tileGradient, outputFilename, dimensions=[8192, 4096, 2048, 1024]):
+def WriteVersions(tileImage, tileGradient, outputFilename, dimensions=None):
+    if dimensions is None:
+        dimensions = [8192, 4096, 2048, 1024, 512]
     try:
         print 'Creating folder', os.path.dirname(outputFilename), '...',
         os.makedirs(os.path.dirname(outputFilename))
@@ -205,12 +203,13 @@ def main(argv=None):
         argv = sys.argv
 
     if len(argv) < 3:
-        print "Usage: command <InputFolder> <OutputFilename>"
+        print "Usage: command <InputFolder> <OutputFilename> [DownSample]"
         print "	<InputFolder> must contain only one set of PNG files to be processed"
         print "	<OutputFilename> must contain the path and base name of the desired output, extension will be added " \
               "automatically"
+        print " [DownSample] max width/height for the slices, it will perform a downsampling before computing the atlas"
         print "Note: this version does not process several folders recursively. "
-        print "You typed:", argv
+        print "You typed: ", argv
         return 2
 
     # Filter only png files in the given folder
@@ -219,28 +218,21 @@ def main(argv=None):
     # Convert into a tiled image
     if len(filenamesPNG) > 0:
         try:
-            global ndimage, misc
-            global h5py
-            global np, da, delayed
+            global ndimage, misc, np, da, delayed, h5py
             import numpy as np
             import dask.array as da
             import h5py
             from dask import delayed
             from scipy import ndimage, misc
-
-            gradient = True
+            c_gradient = True
         except ImportError:
-            print "You need SciPy and Numpy (http://numpy.scipy.org/) to also calculate the gradient!"
-            gradient = False
+            print "You need the following dependencies to also calculate the gradient: scipy, numpy, h5py, dask"
+            c_gradient = False
 
         # From png files
-        if gradient:
-            imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesPNG,
-                                                                                                           load_png,
-                                                                                                           True)
-        else:
-            imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesPNG,
-                                                                                                           load_png)
+        imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesPNG,
+                                                                                                       load_png,
+                                                                                                       c_gradient)
     else:
         print "No PNG files found in that folder, check your parameters or contact the authors :)."
         return 2
@@ -267,15 +259,7 @@ def main(argv=None):
             numberOfSlices, (slicesPerAxis, slicesPerAxis))
 
     # Output is written in different sizes
-    try:
-        WriteVersions(imgTile, gradientTile, argv[2])
-    finally:
-        # Remove cache file
-        try:
-            os.remove('gradient_cache.hdf5')
-        except OSError as e:  # this would be "except OSError, e:" before Python 2.6
-            if e.errno != errno.ENOENT:  # errno.ENOENT = no such file or directory
-                raise  # re-raise exception if a different error occured
+    WriteVersions(imgTile, gradientTile, argv[2])
 
 if __name__ == "__main__":
     sys.exit(main())
