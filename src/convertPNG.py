@@ -141,7 +141,8 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
             boxes.append(box)
 
         channels = ['/r', '/g', '/b']
-        dsets = [h5py.File('gradient_cache.hdf5')[c] for c in channels]
+        handle = h5py.File('gradient_cache.hdf5')
+        dsets = [handle[c] for c in channels]
         arrays = [da.from_array(dset, chunks=chunk_size) for dset in dsets]
         gradient_data = da.stack(arrays, axis=-1)
         for ind, box in enumerate(boxes):
@@ -150,12 +151,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
             gradient.paste(im, box)
             print "processed gradient slice  : " + str(ind) + "/" + str(numberOfSlices)  # filename
 
-        # Remove cache file
-        try:
-            os.remove('gradient_cache.hdf5')
-        except OSError as e:  # this would be "except OSError, e:" before Python 2.6
-            if e.errno != errno.ENOENT:  # errno.ENOENT = no such file or directory
-                raise  # re-raise exception if a different error occured
+        handle.close()
 
     return imout, gradient, size, numberOfSlices, slicesPerAxis
 
@@ -271,8 +267,15 @@ def main(argv=None):
             numberOfSlices, (slicesPerAxis, slicesPerAxis))
 
     # Output is written in different sizes
-    WriteVersions(imgTile, gradientTile, argv[2])
-
+    try:
+        WriteVersions(imgTile, gradientTile, argv[2])
+    finally:
+        # Remove cache file
+        try:
+            os.remove('gradient_cache.hdf5')
+        except OSError as e:  # this would be "except OSError, e:" before Python 2.6
+            if e.errno != errno.ENOENT:  # errno.ENOENT = no such file or directory
+                raise  # re-raise exception if a different error occured
 
 if __name__ == "__main__":
     sys.exit(main())
