@@ -30,67 +30,92 @@ rawByteSwap = True
 # Standard deviation for Gaussian kernel 
 sigmaValue = 1
 
+
+# This function simply loads a PNG file and returns a compatible Image object
+def load_png(filename):
+    im = Image.open(filename)
+    if im.mode != 1:
+        return im.convert("L", palette=Image.ADAPTIVE, colors=256)
+    return im
+
+# Simple decrement function
 def decr(x, y):
     return x - y
 
+# Normalize values between [0-1]
 def normalize(block):
     old_min = delayed(block.min())
     r = delayed(decr)(block.max(), old_min)
     t0 = decr(block, old_min.compute())
     return t0 / r.compute()
 
+# Calculate derivatives function
 def gaussian_filter(block, axis):
     return ndimage.gaussian_filter1d(block, sigma=sigmaValue, axis=axis, order=1)
 
-# This function calculates the gradient from a 3 dimensional numpy array
+# This function calculates the gradient from a 3 dimensional dask array
 def calculate_gradient(arr):
     axises = [1, 0, 2]  # Match RGB
-    g = da.ghost.ghost(arr, depth={0: 2, 1: 2, 2: 1},  boundary={0: 'periodic', 1: 'periodic', 2: 'reflect'})
+    g = da.ghost.ghost(arr, depth={0: 1, 1: 1, 2: 1},  boundary={0: 'periodic', 1: 'periodic', 2: 'reflect'})
     derivatives = [g.map_blocks(gaussian_filter, axis) for axis in axises]
-    derivatives = [da.ghost.trim_internal(d, {0: 2, 1: 2, 2: 1}) for d in derivatives]
+    derivatives = [da.ghost.trim_internal(d, {0: 1, 1: 1, 2: 1}) for d in derivatives]
     gradient = da.stack(derivatives, axis=3)
     return normalize(gradient)
 
 
-# This function simply loads a PNG file and returns a compatible Image object
-def load_png(filename):
-    im = Image.open(filename)
+def resize_image(im, width, height, _filter=Image.BICUBIC):
+    if width is not None or height is not None:
+        original_size = im.size
+        if width is None:
+            width = original_size[0]
+        if height is None:
+            height = original_size[1]
+        size = (width, height)
+        return im.resize(size, _filter)
+    return im
+
+
+def make_square_image(im):
+    mode = im.mode
     width, height = im.size
+    new_background = 0  # L, 1
+    if len(mode) == 3:  # RGB
+        new_background = (0, 0, 0)
+    if len(mode) == 4:  # RGBA, CMYK
+        new_background = (0, 0, 0, 0)
+    new_resolution = max(width, height)
+    offset = ((new_resolution - width) / 2, (new_resolution - height) / 2)
+    t_im = Image.new("L", (new_resolution, new_resolution), new_background)
+    t_im.paste(im, offset)
+    return t_im
+
+
+def read_image(filename, load_img_func=load_png, r_width=None, r_height=None):
+    # Load the image
+    im = load_img_func(filename)
+    # Perform resize if required
+    im = resize_image(im, r_width, r_height)
     # Create an square image if required
-    if width == height:
-        if im.mode != 1:
-            t_im = Image.new("L", im.size, 0)
-            t_im.paste(im)
-            return t_im
-        return im
-    else:
-        mode = im.mode
-        new_background = 0  # L, 1
-        if len(mode) == 3:  # RGB
-            new_background = (0, 0, 0)
-        if len(mode) == 4:  # RGBA, CMYK
-            new_background = (0, 0, 0, 0)
-        new_resolution = max(width, height)
-        offset = ((new_resolution - width) / 2, (new_resolution - height) / 2)
-        t_im = Image.new("L", (new_resolution, new_resolution), new_background)
-        t_im.paste(im, offset)
-        return t_im
+    width, height = im.size
+    if width != height:
+        return make_square_image(im)
+    return im
 
 
 # This function uses the images retrieved with loadImgFunction (whould return a PIL.Image) and
 # writes them as tiles within a new square Image.
 # Returns a set of Image, size of a slice, number of slices and number of slices per axis
-def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False):
+def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False, r_width=None, r_height=None):
     filenames = sorted(filenames)
     print "Desired load function=", loadImgFunction.__name__
-    size = loadImgFunction(filenames[0]).size
+    size = read_image(filenames[0], loadImgFunction, r_width, r_height).size
     numberOfSlices = len(filenames)
     slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlices)))
     imout = Image.new("L", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
 
     i = 0
     for filename in filenames:
-        im = loadImgFunction(filename)
+        im = read_image(filename, loadImgFunction, r_width, r_height)
 
         row = int((math.floor(i / slicesPerAxis)) * size[0])
         col = int((i % slicesPerAxis) * size[1])
@@ -103,8 +128,9 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
 
     gradient = None
     if cGradient:
-        print "Loading the data..."
-        image_list = [da.from_array(np.array(loadImgFunction(f), dtype='uint8'), chunks=size) for f in filenames]
+        print "Starting to compute the gradient: Loading the data..."
+        image_list = [da.from_array(np.array(read_image(f, loadImgFunction, r_width, r_height),
+                                             dtype='uint8'), chunks=size) for f in filenames]
         data = da.stack(image_list, axis=-1)
         cpus = cpu_count()
         chunk_size = [x//cpus for x in data.shape]
@@ -114,13 +140,14 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
         print "Computing the gradient..."
         data = data.astype(np.float32)
         gradient_data = calculate_gradient(data)
-        # Normalize to image values RGB values
+        # Normalize values to RGB values
         gradient_data = gradient_data * 255
         gradient_data = gradient_data.astype(np.uint8)
         # Keep the RGB information separated, uses less RAM memory
         channels = ['/r', '/g', '/b']
         f = tempfile.NamedTemporaryFile(delete=False)
         [da.to_hdf5(f.name, c, gradient_data[:, :, :, i]) for i, c in enumerate(channels)]
+        print "Computed gradient data saved in cache file."
         # Create atlas image
         gradient = Image.new("RGB", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
 
@@ -154,7 +181,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False)
 
 # This functions takes a (tiled) image and writes it to a png file with base filename outputFilename.
 # It also writes several versions in different sizes determined by dimensions
-def WriteVersions(tileImage, tileGradient, outputFilename, dimensions=None):
+def write_versions(tileImage, tileGradient, outputFilename, dimensions=None):
     if dimensions is None:
         dimensions = [8192, 4096, 2048, 1024, 512]
     try:
@@ -203,20 +230,24 @@ def main(argv=None):
         argv = sys.argv
 
     if len(argv) < 3:
-        print "Usage: command <InputFolder> <OutputFilename> [DownSample]"
+        print "Usage: command <InputFolder> <OutputFilename> [width] [height]"
         print "	<InputFolder> must contain only one set of PNG files to be processed"
         print "	<OutputFilename> must contain the path and base name of the desired output, extension will be added " \
               "automatically"
-        print " [DownSample] max width/height for the slices, it will perform a downsampling before computing the atlas"
+        print " [width] max width for the slices, it will resize the slice before computing the atlas"
+        print " [height] max height for the slices, it will resize the slice before computing the atlas"
         print "Note: this version does not process several folders recursively. "
         print "You typed: ", argv
         return 2
 
     # Filter only png files in the given folder
-    filenamesPNG = filter(lambda x: ".png" in x, listdir_fullpath(argv[1]))
+    filenames_png = filter(lambda x: ".png" in x, listdir_fullpath(argv[1]))
+
+    width = int(argv[3]) if len(argv) > 3 else None
+    height = int(argv[4]) if len(argv) > 4 else None
 
     # Convert into a tiled image
-    if len(filenamesPNG) > 0:
+    if len(filenames_png) > 0:
         try:
             global ndimage, misc, np, da, delayed, h5py
             import numpy as np
@@ -230,9 +261,11 @@ def main(argv=None):
             c_gradient = False
 
         # From png files
-        imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesPNG,
+        imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenames_png,
                                                                                                        load_png,
-                                                                                                       c_gradient)
+                                                                                                       c_gradient,
+                                                                                                       width,
+                                                                                                       height)
     else:
         print "No PNG files found in that folder, check your parameters or contact the authors :)."
         return 2
@@ -259,7 +292,7 @@ def main(argv=None):
             numberOfSlices, (slicesPerAxis, slicesPerAxis))
 
     # Output is written in different sizes
-    WriteVersions(imgTile, gradientTile, argv[2])
+    write_versions(imgTile, gradientTile, argv[2])
 
 if __name__ == "__main__":
     sys.exit(main())
