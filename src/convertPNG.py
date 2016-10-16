@@ -1,20 +1,10 @@
 #!/usr/bin/env python
-print """
-This code was created by Luis Kabongo, Vicomtech-IK4 Copyright 2012-2013.
-This application converts the slices found in a folder into a tiled 2D texture 
-image in PNG format (it assumes all files in the folder are of the same type 
-and dimensions). It uses Python with PIL, numpy and pydicom packages are 
-recommended for other formats.
-Information links:
-http://www.volumerc.org
-http://demos.vicomtech.org
-Contact mailto:volumerendering@vicomtech.org
-"""
-
+# coding=utf-8
 import os
 import errno
-import sys
 import math
+import argparse
+from argparse import RawTextHelpFormatter
 from multiprocessing import cpu_count
 import tempfile
 # this is required to manage the images
@@ -28,7 +18,7 @@ sizeOfRaw = (512, 512)
 # This determines if the endianness should be reversed
 rawByteSwap = True
 # Standard deviation for Gaussian kernel 
-sigmaValue = 1
+sigmaValue = 2
 
 
 # This function simply loads a PNG file and returns a compatible Image object
@@ -38,25 +28,35 @@ def load_png(filename):
         return im.convert("L", palette=Image.ADAPTIVE, colors=256)
     return im
 
+
 # Simple decrement function
 def decr(x, y):
     return x - y
 
+
+def div(x, y):
+    return x / y
+
+
 # Normalize values between [0-1]
 def normalize(block):
     old_min = delayed(block.min())
-    r = delayed(decr)(block.max(), old_min)
-    t0 = decr(block, old_min.compute())
-    return t0 / r.compute()
+    old_max = delayed(block.max())
+    r = delayed(decr)(old_max, old_min)
+    minimum = old_min.compute()
+    t0 = decr(block, minimum)
+    return div(t0, r.compute()), -minimum/r.compute()
+
 
 # Calculate derivatives function
 def gaussian_filter(block, axis):
     return ndimage.gaussian_filter1d(block, sigma=sigmaValue, axis=axis, order=1)
 
+
 # This function calculates the gradient from a 3 dimensional dask array
 def calculate_gradient(arr):
     axises = [1, 0, 2]  # Match RGB
-    g = da.ghost.ghost(arr, depth={0: 1, 1: 1, 2: 1},  boundary={0: 'periodic', 1: 'periodic', 2: 'reflect'})
+    g = da.ghost.ghost(arr, depth={0: 1, 1: 1, 2: 1},  boundary={0: 'reflect', 1: 'reflect', 2: 'reflect'})
     derivatives = [g.map_blocks(gaussian_filter, axis) for axis in axises]
     derivatives = [da.ghost.trim_internal(d, {0: 1, 1: 1, 2: 1}) for d in derivatives]
     gradient = da.stack(derivatives, axis=3)
@@ -139,9 +139,10 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False,
         print "Loading complete. Data size: "+str(data.shape)
         print "Computing the gradient..."
         data = data.astype(np.float32)
-        gradient_data = calculate_gradient(data)
+        gradient_data, g_background = calculate_gradient(data)
         # Normalize values to RGB values
-        gradient_data = gradient_data * 255
+        gradient_data *= 255
+        g_background = int(g_background * 255)
         gradient_data = gradient_data.astype(np.uint8)
         # Keep the RGB information separated, uses less RAM memory
         channels = ['/r', '/g', '/b']
@@ -149,7 +150,9 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False,
         [da.to_hdf5(f.name, c, gradient_data[:, :, :, i]) for i, c in enumerate(channels)]
         print "Computed gradient data saved in cache file."
         # Create atlas image
-        gradient = Image.new("RGB", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
+        gradient = Image.new("RGB",
+                             (size[0] * slicesPerAxis, size[1] * slicesPerAxis),
+                             (g_background, g_background, g_background))
 
         channels = ['/r', '/g', '/b']
         handle = h5py.File(f.name)
@@ -165,7 +168,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False,
             s = gradient_data[:, :, i, :]
             im = Image.fromarray(np.array(s))
             gradient.paste(im, box)
-            print "processed gradient slice  : " + str(i) + "/" + str(numberOfSlices)  # filename
+            print "processed gradient slice  : " + str(i+1) + "/" + str(numberOfSlices)  # filename
 
         try:
             handle.close()
@@ -223,31 +226,58 @@ def listdir_fullpath(d):
     return [os.path.join(d, f) for f in os.listdir(d)]
 
 
-# This is the main program, it takes at least 2 arguments <InputFolder> and <OutputFilename>
-def main(argv=None):
-    print "Parsing arguments..."
-    if argv is None:
-        argv = sys.argv
+######################################
+# Main program - CLI with argparse - #
+######################################
+def main():
+    # Define th CLI
+    parser = argparse.ArgumentParser(prog='PNG Atlas Generator',
+                                     description='''PNG Atlas generation utility\n
+This application converts the slices found in a folder into a tiled 2D texture
+image in PNG format.\nIt uses Python with PIL, numpy and pydicom packages are recommended for other formats.
+\n
+Note: this version does not process several folders recursively.''',
+                                     epilog='''
+This code was created by Luis Kabongo, Vicomtech-IK4 Copyright 2012-2013.
+Modified by Ander Arbelaiz to add gradient calculation.\n
+Information links:
+https://github.com/VolumeRC/AtlasConversionScripts/wiki
+http://www.volumerc.org
+http://demos.vicomtech.org
+Contact mailto:volumerendering@vicomtech.org''',
+                                     formatter_class=RawTextHelpFormatter)
+    parser.add_argument('input', type=str, help='must contain a path to one set of PNG files to be processed')
+    parser.add_argument('output', type=str,
+                        help='must contain the path and base name of the desired output,\n'
+                             'extension will be added automatically')
+    parser.add_argument('--resize', '-r', type=int, nargs=2, metavar=('x', 'y'),
+                        help='resizing of the input images x y, before processing')
+    parser.add_argument('--gradient', '-g', action='store_true',
+                        help='calculate and generate the gradient atlas')
+    parser.add_argument('--standard_deviation', '-std', type=int, default=2,
+                        help='standard deviation for the gaussian kernel used for the gradient computation')
 
-    if len(argv) < 3:
-        print "Usage: command <InputFolder> <OutputFilename> [width] [height]"
-        print "	<InputFolder> must contain only one set of PNG files to be processed"
-        print "	<OutputFilename> must contain the path and base name of the desired output, extension will be added " \
-              "automatically"
-        print " [width] max width for the slices, it will resize the slice before computing the atlas"
-        print " [height] max height for the slices, it will resize the slice before computing the atlas"
-        print "Note: this version does not process several folders recursively. "
-        print "You typed: ", argv
-        return 2
+    # Obtain the parsed arguments
+    print "Parsing arguments..."
+    arguments = parser.parse_args()
 
     # Filter only png files in the given folder
-    filenames_png = filter(lambda x: ".png" in x, listdir_fullpath(argv[1]))
+    filenames_png = filter(lambda x: ".png" in x, listdir_fullpath(arguments.input))
 
-    width = int(argv[3]) if len(argv) > 3 else None
-    height = int(argv[4]) if len(argv) > 4 else None
+    if not len(filenames_png) > 0:
+        print "No PNG files found in that folder, check your parameters or contact the authors :)."
+        return 2
 
-    # Convert into a tiled image
-    if len(filenames_png) > 0:
+    if arguments.resize:
+        width, height = arguments.resize[0], arguments.resize[1]
+    else:
+        width, height = None, None
+
+    # Update global value for standard_deviation
+    sigmaValue = arguments.standard_deviation
+
+    c_gradient = False
+    if arguments.gradient:
         try:
             global ndimage, misc, np, da, delayed, h5py
             import numpy as np
@@ -257,42 +287,38 @@ def main(argv=None):
             from scipy import ndimage, misc
             c_gradient = True
         except ImportError:
-            print "You need the following dependencies to also calculate the gradient: scipy, numpy, h5py, dask"
-            c_gradient = False
+            print "You need the following dependencies to also calculate the gradient: scipy, numpy, h5py and dask"
 
-        # From png files
-        imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenames_png,
-                                                                                                       load_png,
-                                                                                                       c_gradient,
-                                                                                                       width,
-                                                                                                       height)
-    else:
-        print "No PNG files found in that folder, check your parameters or contact the authors :)."
-        return 2
+    # From png files
+    imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenames_png,
+                                                                                                   load_png,
+                                                                                                   c_gradient,
+                                                                                                   width,
+                                                                                                   height)
 
     # Write a text file containing the number of slices for reference
     try:
         try:
-            print 'Creating folder', os.path.dirname(argv[2]), '...',
-            os.makedirs(os.path.dirname(argv[2]))
+            print 'Creating folder', os.path.dirname(arguments.output), '...',
+            os.makedirs(os.path.dirname(arguments.output))
         except OSError as exc:
-            if exc.errno == errno.EEXIST and os.path.isdir(os.path.dirname(argv[2])):
+            if exc.errno == errno.EEXIST and os.path.isdir(os.path.dirname(arguments.output)):
                 print 'was already there.'
             else:
                 print ', folders might not be created, trying to write anyways...'
         except:
             print ", could not create folders, trying to write anyways..."
-        with open(argv[2] + "_AtlasDim.txt", 'w') as f:
+        with open(str(arguments.output) + "_AtlasDim.txt", 'w') as f:
             f.write(str((numberOfSlices, (slicesPerAxis, slicesPerAxis))))
     except:
-        print "Could not write a text file", argv[2] + "_AtlasDim.txt", \
+        print "Could not write a text file", str(arguments.output) + "_AtlasDim.txt", \
             "containing dimensions (total slices, slices per axis):", (numberOfSlices, (slicesPerAxis, slicesPerAxis))
     else:
-        print "Created", argv[2] + "_AtlasDim.txt", "containing dimensions (total slices, slices per axis):", (
-            numberOfSlices, (slicesPerAxis, slicesPerAxis))
+        print "Created", arguments.output + "_AtlasDim.txt", "containing dimensions (total slices, slices per axis):",\
+            (numberOfSlices, (slicesPerAxis, slicesPerAxis))
 
     # Output is written in different sizes
-    write_versions(imgTile, gradientTile, argv[2])
+    write_versions(imgTile, gradientTile, arguments.output)
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
