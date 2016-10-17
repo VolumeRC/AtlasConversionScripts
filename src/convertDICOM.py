@@ -1,22 +1,12 @@
 #!/usr/bin/env python
 # coding=utf-8
-print """
-This code was created by Luis Kabongo, Vicomtech-IK4 Copyright 2012-2013.
-This application converts the slices found in a folder into a tiled 2D texture 
-image in PNG format (it assumes all files in the folder are of the same type 
-and dimensions). It uses Python with PIL, numpy and pydicom packages are 
-recommended for other formats.
-Information links:
-http://www.volumerc.org
-http://demos.vicomtech.org
-Contact mailto:volumerendering@vicomtech.org
-"""
-
 import os, errno
 import sys
-import getopt
 import math
-import array
+import argparse
+from argparse import RawTextHelpFormatter
+from multiprocessing import cpu_count
+import tempfile
 # this is required to manage the images
 try:
     from PIL import Image
@@ -28,24 +18,37 @@ sizeOfRaw = (512, 512)
 # This determines if the endianness should be reversed
 rawByteSwap = True
 # Standard deviation for Gaussian kernel 
-sigmaValue = 1
+sigmaValue = 2
 
 
-def normalize(inputData):
-    old_min = inputData.min()
-    old_range = inputData.max() - old_min
-    return (inputData - old_min) / old_range
+# Simple decrement function
+def decr(x, y):
+    return x - y
 
 
-# This function calculates the gradient from a 3 dimensional numpy array
-def calculateGradient(arr):
-    r = np.zeros(arr.shape)
-    g = np.zeros(arr.shape)
-    b = np.zeros(arr.shape)
-    ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=1, order=1, output=r)
-    ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=0, order=1, output=g)
-    ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=2, order=1, output=b)
-    return normalize(np.concatenate((r[..., np.newaxis], g[..., np.newaxis], b[..., np.newaxis]), axis=3))
+# Normalize values between [0-1]
+def normalize(block):
+    old_min = delayed(block.min())
+    old_max = delayed(block.max())
+    r = delayed(decr)(old_max, old_min)
+    minimum = old_min.compute()
+    t0 = decr(block, minimum)
+    return t0/r.compute(), -minimum/r.compute()
+
+
+# Calculate derivatives function
+def gaussian_filter(block, axis):
+    return ndimage.gaussian_filter1d(block, sigma=sigmaValue, axis=axis, order=1)
+
+
+# This function calculates the gradient from a 3 dimensional dask array
+def calculate_gradient(arr):
+    axises = [1, 0, 2]  # Match RGB
+    g = da.ghost.ghost(arr, depth={0: 1, 1: 1, 2: 1},  boundary={0: 'reflect', 1: 'reflect', 2: 'reflect'})
+    derivatives = [g.map_blocks(gaussian_filter, axis) for axis in axises]
+    derivatives = [da.ghost.trim_internal(d, {0: 1, 1: 1, 2: 1}) for d in derivatives]
+    gradient = da.stack(derivatives, axis=3)
+    return normalize(gradient)
 
 
 # This function returns the data array values mapped to 0-256 using window/level parameters
@@ -130,26 +133,62 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=loadDICOM, cGradient=False
 
         box = (int(col), int(row), int(col + size[0]), int(row + size[1]))
         imout.paste(im, box)
+
         i += 1
         print "processed slice  : " + str(i) + "/" + str(numberOfSlices)  # filename
 
+    gradient = None
     if cGradient:
-        data = loadDICOM(filenames[0], arr=True)
-        for f in range(1, len(filenames)):
-            data = np.dstack((data, loadDICOM(filenames[f], arr=True)))
+        print "Starting to compute the gradient: Loading the data..."
+        image_list = [da.from_array(np.array(loadImgFunction(f), dtype='uint8'), chunks=size) for f in filenames]
+        data = da.stack(image_list, axis=-1)
+        cpus = cpu_count()
+        chunk_size = [x // cpus for x in data.shape]
+        print "Calculated chunk size: " + str(chunk_size)
+        data = da.rechunk(data, chunks=chunk_size)
+        print "Loading complete. Data size: " + str(data.shape)
+        print "Computing the gradient..."
+        data = data.astype(np.float32)
+        gradient_data, g_background = calculate_gradient(data)
+        # Normalize values to RGB values
+        gradient_data *= 255
+        g_background = int(g_background * 255)
+        gradient_data = gradient_data.astype(np.uint8)
+        # Keep the RGB information separated, uses less RAM memory
+        channels = ['/r', '/g', '/b']
+        f = tempfile.NamedTemporaryFile(delete=False)
+        [da.to_hdf5(f.name, c, gradient_data[:, :, :, i]) for i, c in enumerate(channels)]
+        print "Computed gradient data saved in cache file."
+        # Create atlas image
+        gradient = Image.new("RGB",
+                             (size[0] * slicesPerAxis, size[1] * slicesPerAxis),
+                             (g_background, g_background, g_background))
 
-        gradientData = calculateGradient(data)
-        atlasArray = np.zeros((size[0] * slicesPerAxis, size[1] * slicesPerAxis, 3))
+        channels = ['/r', '/g', '/b']
+        handle = h5py.File(f.name)
+        dsets = [handle[c] for c in channels]
+        arrays = [da.from_array(dset, chunks=chunk_size) for dset in dsets]
+        gradient_data = da.stack(arrays, axis=-1)
 
         for i in range(0, numberOfSlices):
             row = int((math.floor(i / slicesPerAxis)) * size[0])
             col = int((i % slicesPerAxis) * size[1])
+            box = (int(col), int(row), int(col + size[0]), int(row + size[1]))
 
-            box = (int(row), int(col), int(row + size[0]), int(col + size[1]))
-            atlasArray[box[0]:box[2], box[1]:box[3], :] = gradientData[:, :, i, :]
+            s = gradient_data[:, :, i, :]
+            im = Image.fromarray(np.array(s))
+            gradient.paste(im, box)
+            print "processed gradient slice  : " + str(i + 1) + "/" + str(numberOfSlices)  # filename
 
-        gradient = misc.toimage(atlasArray)
-
+        try:
+            handle.close()
+            f.close()
+        finally:
+            try:
+                os.remove(f.name)
+            except OSError as e:  # this would be "except OSError, e:" before Python 2.6
+                if e.errno != errno.ENOENT:  # errno.ENOENT = no such file or directory
+                    raise  # re-raise exception if a different error occurred
     return imout, gradient, size, numberOfSlices, slicesPerAxis
 
 
@@ -198,81 +237,96 @@ def listdir_fullpath(d):
 
 
 # This is the main program, it takes at least 2 arguments <InputFolder> and <OutputFilename>
-def main(argv=None):
-    print "Parsing arguments..."
-    if argv is None:
-        argv = sys.argv
+def main():
+    # Define th CLI
+    parser = argparse.ArgumentParser(prog='DICOM Atlas Generator',
+                                     description='''DICOM Atlas generation utility\n
+    This application converts the slices found in a folder into a tiled 2D texture
+    image in DICOM format.\nIt uses Python with PIL, numpy and pydicom packages are recommended for other formats.
+    \n
+    Note: this version does not process several folders recursively.''',
+                                     epilog='''
+    This code was created by Luis Kabongo, Vicomtech-IK4 Copyright 2012-2013.
+    Modified by Ander Arbelaiz to add gradient calculation.\n
+    Information links:
+    https://github.com/VolumeRC/AtlasConversionScripts/wiki
+    http://www.volumerc.org
+    http://demos.vicomtech.org
+    Contact mailto:volumerendering@vicomtech.org''',
+                                     formatter_class=RawTextHelpFormatter)
+    parser.add_argument('input', type=str, help='must contain a path to one set of DICOM files to be processed')
+    parser.add_argument('output', type=str,
+                        help='must contain the path and base name of the desired output,\n'
+                             'extension will be added automatically')
+    parser.add_argument('--gradient', '-g', action='store_true',
+                        help='calculate and generate the gradient atlas')
+    parser.add_argument('--standard_deviation', '-std', type=int, default=2,
+                        help='standard deviation for the gaussian kernel used for the gradient computation')
 
-    if len(argv) < 3:
-        print "Usage: command <InputFolder> <OutputFilename>"
-        print "	<InputFolder> must contain only one series of DICOM files to be processed"
-        print "	<OutputFilename> must contain the path and base name of the desired output, extensions will be added automatically"
-        print "Note: this version does not process several DICOM folders recursively. "
-        print "You typed:", argv
-        return 2
+    # Obtain the parsed arguments
+    print "Parsing arguments..."
+    arguments = parser.parse_args()
 
     # Filter only DCM files in the given folder
-    filenamesDCM = filter(lambda x: ".DCM" in x or ".dcm" in x, listdir_fullpath(argv[1]))
+    filenamesDCM = filter(lambda x: ".DCM" in x or ".dcm" in x, listdir_fullpath(arguments.input))
 
-    # Convert into a tiled image
-    if len(filenamesDCM) > 0:
-        # Dicom dependencies
-        try:
-            global dicom
-            global np
-            import dicom
-            import numpy as np
-        except:
-            print "You need dicom package (http://code.google.com/p/pydicom/) and numpy (http://numpy.scipy.org/) to do this!"
-            return 2
-
-        # Scipy dependdencies
-        try:
-            global ndimage, misc
-            from scipy import ndimage, misc
-
-            gradient = True
-        except ImportError:
-            print "You need ndimage and misc modules from SciPy to also calculate the gradient!"
-            gradient = False
-
-        # From dcm files
-        if gradient:
-            imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesDCM,
-                                                                                                           loadDICOM,
-                                                                                                           True)
-        else:
-            imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesDCM,
-                                                                                                           loadDICOM)
-    else:
+    if not len(filenamesDCM) > 0:
         print "No DICOM files found in that folder, check your parameters or contact the authors :)."
         return 2
+
+    # Update global value for standard_deviation
+    sigmaValue = arguments.standard_deviation
+
+    # Dicom dependencies
+    try:
+        global dicom
+        global np
+        import dicom
+        import numpy as np
+    except:
+        print "You need dicom package (http://code.google.com/p/pydicom/) and numpy (http://numpy.scipy.org/) to do this!"
+        return 2
+
+    c_gradient = False
+    if arguments.gradient:
+        try:
+            global ndimage, misc, np, da, delayed, h5py
+            import numpy as np
+            import dask.array as da
+            import h5py
+            from dask import delayed
+            from scipy import ndimage, misc
+            c_gradient = True
+        except ImportError:
+            print "You need the following dependencies to also calculate the gradient: scipy, numpy, h5py and dask"
+
+    imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenamesDCM,
+                                                                                                   loadDICOM,
+                                                                                                   c_gradient)
 
     # Write a text file containing the number of slices for reference
     try:
         try:
-            print 'Creating folder', os.path.dirname(argv[2]), '...',
-            os.makedirs(os.path.dirname(argv[2]))
+            print 'Creating folder', os.path.dirname(arguments.output), '...',
+            os.makedirs(os.path.dirname(arguments.output))
         except OSError as exc:
-            if exc.errno == errno.EEXIST and os.path.isdir(os.path.dirname(argv[2])):
+            if exc.errno == errno.EEXIST and os.path.isdir(os.path.dirname(arguments.output)):
                 print 'was already there.'
             else:
                 print ', folders might not be created, trying to write anyways...'
         except:
             print ", could not create folders, trying to write anyways..."
-        with open(argv[2] + "_AtlasDim.txt", 'w') as f:
+        with open(str(arguments.output) + "_AtlasDim.txt", 'w') as f:
             f.write(str((numberOfSlices, (slicesPerAxis, slicesPerAxis))))
     except:
-        print "Could not write a text file", \
-            argv[2] + "_AtlasDim.txt", \
-            "containing dimensions (total slices, slices per axis):", \
-            (numberOfSlices, (slicesPerAxis, slicesPerAxis))
+        print "Could not write a text file", str(arguments.output) + "_AtlasDim.txt", \
+            "containing dimensions (total slices, slices per axis):", (numberOfSlices, (slicesPerAxis, slicesPerAxis))
     else:
-        print "Created", argv[2] + "_AtlasDim.txt", "containing dimensions (total slices, slices per axis):", (
-        numberOfSlices, (slicesPerAxis, slicesPerAxis))
+        print "Created", arguments.output + "_AtlasDim.txt", "containing dimensions (total slices, slices per axis):", \
+            (numberOfSlices, (slicesPerAxis, slicesPerAxis))
 
     # Output is written in different sizes
-    WriteVersions(imgTile, gradientTile, argv[2])
+    write_versions(imgTile, gradientTile, arguments.output)
 
 
 if __name__ == "__main__":

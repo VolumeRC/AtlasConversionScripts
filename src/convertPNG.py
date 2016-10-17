@@ -34,10 +34,6 @@ def decr(x, y):
     return x - y
 
 
-def div(x, y):
-    return x / y
-
-
 # Normalize values between [0-1]
 def normalize(block):
     old_min = delayed(block.min())
@@ -45,7 +41,7 @@ def normalize(block):
     r = delayed(decr)(old_max, old_min)
     minimum = old_min.compute()
     t0 = decr(block, minimum)
-    return div(t0, r.compute()), -minimum/r.compute()
+    return t0/r.compute(), -minimum/r.compute()
 
 
 # Calculate derivatives function
