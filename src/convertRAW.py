@@ -112,8 +112,10 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=loadRAW2Numpy):
 
 
 # This functions takes a (tiled) image and writes it to a png file with base filename outputFilename.
-#	It also writes several versions in different sizes determined by dimensions
-def WriteVersions(tileImage, tileGradient, outputFilename, dimensions=[8192, 4096, 2048, 1024]):
+# It also writes several versions in different sizes determined by dimensions
+def write_versions(tileImage, tileGradient, outputFilename, dimensions=None):
+    if dimensions is None:
+        dimensions = [8192, 4096, 2048, 1024, 512]
     try:
         print 'Creating folder', os.path.dirname(outputFilename), '...',
         os.makedirs(os.path.dirname(outputFilename))
