@@ -1,4 +1,6 @@
 name: volren-atlas
+channels: !!python/tuple
+- !!python/unicode 'defaults'
 dependencies:
 - backports=1.0=py27_0
 - backports_abc=0.4=py27_0
@@ -46,4 +48,6 @@ dependencies:
 - pip:
   - backports-abc==0.4
   - backports.ssl-match-hostname==3.4.0.2
+  - pydicom==0.9.9
+  - pynrrd==0.2.1
 

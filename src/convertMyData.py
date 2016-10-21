@@ -166,9 +166,8 @@ def main(argv=None):
         with open(argv[2] + "_AtlasDim.txt", 'w') as f:
             f.write(str((numberOfSlices, (slicesPerAxis, slicesPerAxis))))
     except:
-        print "Could not write a text file", argv[
-                                                 2] + "_AtlasDim.txt", "containing dimensions (total slices, slices per axis):", (
-        numberOfSlices, (slicesPerAxis, slicesPerAxis))
+        print "Could not write a text file", argv[2] + "_AtlasDim.txt", "containing dimensions (total slices, slices per axis):",\
+            (numberOfSlices, (slicesPerAxis, slicesPerAxis))
     else:
         print "Created", argv[2] + "_AtlasDim.txt", "containing dimensions (total slices, slices per axis):", (
         numberOfSlices, (slicesPerAxis, slicesPerAxis))

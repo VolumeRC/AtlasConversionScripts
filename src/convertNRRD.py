@@ -1,19 +1,13 @@
 #!/usr/bin/env python
 # coding=utf-8
-print """
-This application converts a nrrd file into a tiled 2D texture 
-image in PNG format (it assumes all slices are of the same type 
-and dimensions). It uses Python with PIL, pynrrd and numpy.
-Information links:
-http://www.volumerc.org
-http://demos.vicomtech.org
-Contact mailto:volumerendering@vicomtech.org
-"""
 
 import os, errno
 import sys
 import math
-import array
+import argparse
+from argparse import RawTextHelpFormatter
+from multiprocessing import cpu_count
+import tempfile
 # this is required to manage the images
 try:
     from PIL import Image
@@ -27,24 +21,37 @@ except ImportError:
     exit()
 
 # Standard deviation for Gaussian kernel 
-sigmaValue = 1
+sigmaValue = 2
 
 
-def normalize(inputData):
-    old_min = inputData.min()
-    old_range = inputData.max() - old_min
-    return (inputData - old_min) / old_range
+# Simple decrement function
+def decr(x, y):
+    return x - y
 
 
-# This function calculates the gradient from a 3 dimensional numpy array
-def calculateGradient(arr):
-    r = np.zeros(arr.shape)
-    g = np.zeros(arr.shape)
-    b = np.zeros(arr.shape)
-    ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=1, order=1, output=r)
-    ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=0, order=1, output=g)
-    ndimage.gaussian_filter1d(arr, sigma=sigmaValue, axis=2, order=1, output=b)
-    return normalize(np.concatenate((r[..., np.newaxis], g[..., np.newaxis], b[..., np.newaxis]), axis=3))
+# Normalize values between [0-1]
+def normalize(block):
+    old_min = delayed(block.min())
+    old_max = delayed(block.max())
+    r = delayed(decr)(old_max, old_min)
+    minimum = old_min.compute()
+    t0 = decr(block, minimum)
+    return t0/r.compute(), -minimum/r.compute()
+
+
+# Calculate derivatives function
+def gaussian_filter(block, axis):
+    return ndimage.gaussian_filter1d(block, sigma=sigmaValue, axis=axis, order=1)
+
+
+# This function calculates the gradient from a 3 dimensional dask array
+def calculate_gradient(arr):
+    axises = [1, 0, 2]  # Match RGB
+    g = da.ghost.ghost(arr, depth={0: 1, 1: 1, 2: 1},  boundary={0: 'reflect', 1: 'reflect', 2: 'reflect'})
+    derivatives = [g.map_blocks(gaussian_filter, axis) for axis in axises]
+    derivatives = [da.ghost.trim_internal(d, {0: 1, 1: 1, 2: 1}) for d in derivatives]
+    gradient = da.stack(derivatives, axis=3)
+    return normalize(gradient)
 
 
 # This function simply loads a NRRD file and returns a compatible Image object
@@ -60,7 +67,7 @@ def loadNRRD(filename):
 # This function uses the images retrieved with loadImgFunction (whould return a PIL.Image) and
 #	writes them as tiles within a new square Image. 
 #	Returns a set of Image, size of a slice, number of slices and number of slices per axis
-def ImageSlices2TiledImage(filename, loadImgFunction=loadNRRD):
+def ImageSlices2TiledImage(filename, loadImgFunction=loadNRRD, cGradient=False):
     print "Desired load function=", loadImgFunction.__name__
     data = loadImgFunction(filename)
     volumeSize = (data.shape[0], data.shape[1])
@@ -68,20 +75,62 @@ def ImageSlices2TiledImage(filename, loadImgFunction=loadNRRD):
     slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlices)))
     atlasArray = np.zeros((volumeSize[0] * slicesPerAxis, volumeSize[1] * slicesPerAxis))
 
-    gradientData = calculateGradient(data)
-    atlasGradientArray = np.zeros((volumeSize[0] * slicesPerAxis, volumeSize[1] * slicesPerAxis, 3))
-
     for i in range(0, numberOfSlices):
         row = int((math.floor(i / slicesPerAxis)) * volumeSize[0])
         col = int((i % slicesPerAxis) * volumeSize[1])
         box = (row, col, int(row + volumeSize[0]), int(col + volumeSize[1]))
         atlasArray[box[0]:box[2], box[1]:box[3]] = data[:, :, i]
-        atlasGradientArray[box[0]:box[2], box[1]:box[3], :] = gradientData[:, :, i, :]
 
     # From numpy to PIL image
     imout = misc.toimage(atlasArray, mode="L")
-    gradient = misc.toimage(atlasGradientArray, mode="RGB")
 
+    gradient = None
+    if cGradient:
+        print "Starting to compute the gradient: Loading the data..."
+        cpus = cpu_count()
+        chunk_size = [x // cpus for x in data.shape]
+        print "Calculated chunk size: " + str(chunk_size)
+        data = da.from_array(data, chunks=chunk_size)
+        print "Computing the gradient..."
+        data = data.astype(np.float32)
+        gradient_data, g_background = calculate_gradient(data)
+        # Normalize values to RGB values
+        gradient_data *= 255
+        g_background = int(g_background * 255)
+        gradient_data = gradient_data.astype(np.uint8)
+        # Keep the RGB information separated, uses less RAM memory
+        channels = ['/r', '/g', '/b']
+        f = tempfile.NamedTemporaryFile(delete=False)
+        [da.to_hdf5(f.name, c, gradient_data[:, :, :, i]) for i, c in enumerate(channels)]
+        print "Computed gradient data saved in cache file."
+        # Create atlas image
+        gradient = Image.new("RGB",
+                             (volumeSize[0] * slicesPerAxis, volumeSize[1] * slicesPerAxis),
+                             (g_background, g_background, g_background))
+
+        channels = ['/r', '/g', '/b']
+        handle = h5py.File(f.name)
+        dsets = [handle[c] for c in channels]
+        arrays = [da.from_array(dset, chunks=chunk_size) for dset in dsets]
+        gradient_data = da.stack(arrays, axis=-1)
+
+        for i in range(0, numberOfSlices):
+            row = int((math.floor(i / slicesPerAxis)) * volumeSize[0])
+            col = int((i % slicesPerAxis) * volumeSize[1])
+            box = (int(col), int(row), int(col + volumeSize[0]), int(row + volumeSize[1]))
+
+            s = gradient_data[:, :, i, :]
+            im = Image.fromarray(np.array(s))
+            gradient.paste(im, box)
+        try:
+            handle.close()
+            f.close()
+        finally:
+            try:
+                os.remove(f.name)
+            except OSError as e:  # this would be "except OSError, e:" before Python 2.6
+                if e.errno != errno.ENOENT:  # errno.ENOENT = no such file or directory
+                    raise  # re-raise exception if a different error occurred
     return imout, gradient, volumeSize, numberOfSlices, slicesPerAxis
 
 
@@ -123,65 +172,97 @@ def write_versions(tileImage, tileGradient, outputFilename, dimensions=None):
                 except:
                     print "Failed writing ", outputFilename, "_gradient_", str(dim), ".png"
 
-# This function lists the files within a given directory dir
-def listdir_fullpath(d):
-    return [os.path.join(d, f) for f in os.listdir(d)]
-
 
 # This is the main program, it takes at least 2 arguments <InputFolder> and <OutputFilename>
 def main(argv=None):
+    # Define th CLI
+    parser = argparse.ArgumentParser(prog='NRRD Atlas Generator',
+                                     description='''
+NRRD Atlas generation utility
+-----------------------------\n
+
+This application converts the slices found in a folder into a tiled 2D texture
+image in PNG format.\nIt uses Python with PIL, numpy and pydicom packages are recommended for other formats.
+''',
+                                 epilog='''
+This code was created by Luis Kabongo, Vicomtech-IK4 Copyright 2012-2013.
+Modified by Ander Arbelaiz to add gradient calculation.\n
+Information links:
+ - https://github.com/VolumeRC/AtlasConversionScripts/wiki
+ - http://www.volumerc.org
+ - http://demos.vicomtech.org
+Contact mailto:volumerendering@vicomtech.org''',
+                                     formatter_class=RawTextHelpFormatter)
+    parser.add_argument('input', type=str, help='must contain a path to the NRRD file to be processed')
+    parser.add_argument('output', type=str,
+                        help='must contain the path and base name of the desired output,\n'
+                             'extension will be added automatically')
+    parser.add_argument('--gradient', '-g', action='store_true',
+                        help='calculate and generate the gradient atlas')
+    parser.add_argument('--standard_deviation', '-std', type=int, default=2,
+                        help='standard deviation for the gaussian kernel used for the gradient computation')
+
+    # Obtain the parsed arguments
     print "Parsing arguments..."
-    if argv is None:
-        argv = sys.argv
+    arguments = parser.parse_args()
 
-    if len(argv) < 3:
-        print "Usage: command <InputFolder> <OutputFilename>"
-        print "	<InputFile> must contain only the NRRD file to be processed"
-        print "	<OutputFilename> must contain the path and base name of the desired output, extension will be added automatically"
-        print "Note: this version does not process several folders recursively. "
-        print "You typed:", argv
-        return 2
+    filenameNRRD = arguments.input
 
-    filenameNRRD = argv[1]
-
-    # Convert into a tiled image
-    if len(filenameNRRD) > 0:
-        try:
-            global nrrd
-            import nrrd
-        except:
-            print "You need pynrrd package (sudo easy_install pynrrd) to do this!"
-            return 2
-        # From nrrd files
-        imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenameNRRD,
-                                                                                                       loadNRRD)
-    else:
+    if not len(filenameNRRD) > 0:
         print "No NRRD file found in that folder, check your parameters or contact the authors :)."
         return 2
+
+    # Convert into a tiled image
+    try:
+        global nrrd
+        import nrrd
+    except:
+        print "You need pynrrd package (sudo easy_install pynrrd) to do this!"
+        return 2
+
+    # Update global value for standard_deviation
+    sigmaValue = arguments.standard_deviation
+
+    c_gradient = False
+    if arguments.gradient:
+        try:
+            global da, delayed, h5py
+            import dask.array as da
+            import h5py
+            from dask import delayed
+            c_gradient = True
+        except ImportError:
+            print "You need the following dependencies to also calculate the gradient: numpy, h5py and dask"
+
+    # From nrrd files
+    imgTile, gradientTile, sliceResolution, numberOfSlices, slicesPerAxis = ImageSlices2TiledImage(filenameNRRD,
+                                                                                                   loadNRRD,
+                                                                                                   c_gradient)
 
     # Write a text file containing the number of slices for reference
     try:
         try:
-            print 'Creating folder', os.path.dirname(argv[2]), '...',
-            os.makedirs(os.path.dirname(argv[2]))
+            print 'Creating folder', os.path.dirname(arguments.output), '...',
+            os.makedirs(os.path.dirname(arguments.output))
         except OSError as exc:
-            if exc.errno == errno.EEXIST and os.path.isdir(os.path.dirname(argv[2])):
+            if exc.errno == errno.EEXIST and os.path.isdir(os.path.dirname(arguments.output)):
                 print 'was already there.'
             else:
                 print ', folders might not be created, trying to write anyways...'
         except:
             print ", could not create folders, trying to write anyways..."
-        with open(argv[2] + "_AtlasDim.txt", 'w') as f:
+        with open(str(arguments.output) + "_AtlasDim.txt", 'w') as f:
             f.write(str((numberOfSlices, (slicesPerAxis, slicesPerAxis))))
     except:
-        print "Could not write a text file", argv[2] + "_AtlasDim.txt", \
-            "containing dimensions (total slices, slices per axis):", (numberOfSlices, (slicesPerAxis, slicesPerAxis))
-    else:
-        print "Created", argv[2] + "_AtlasDim.txt", "containing dimensions (total slices, slices per axis):", (
+        print "Could not write a text file", str(arguments.output) + "_AtlasDim.txt", \
+            "containing dimensions (total slices, slices per axis):", (
         numberOfSlices, (slicesPerAxis, slicesPerAxis))
+    else:
+        print "Created", arguments.output + "_AtlasDim.txt", "containing dimensions (total slices, slices per axis):", \
+            (numberOfSlices, (slicesPerAxis, slicesPerAxis))
 
     # Output is written in different sizes
-    WriteVersions(imgTile, gradientTile, argv[2])
+    write_versions(imgTile, gradientTile, arguments.output)
 
 
 if __name__ == "__main__":

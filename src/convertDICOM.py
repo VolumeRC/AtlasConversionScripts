@@ -140,7 +140,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=loadDICOM, cGradient=False
     gradient = None
     if cGradient:
         print "Starting to compute the gradient: Loading the data..."
-        image_list = [da.from_array(np.array(loadImgFunction(f), dtype='uint8'), chunks=size) for f in filenames]
+        image_list = [da.from_array(np.array(loadImgFunction(f, arr=True), dtype='uint8'), chunks=size) for f in filenames]
         data = da.stack(image_list, axis=-1)
         cpus = cpu_count()
         chunk_size = [x // cpus for x in data.shape]
@@ -240,19 +240,22 @@ def listdir_fullpath(d):
 def main():
     # Define th CLI
     parser = argparse.ArgumentParser(prog='DICOM Atlas Generator',
-                                     description='''DICOM Atlas generation utility\n
-    This application converts the slices found in a folder into a tiled 2D texture
-    image in DICOM format.\nIt uses Python with PIL, numpy and pydicom packages are recommended for other formats.
-    \n
-    Note: this version does not process several folders recursively.''',
-                                     epilog='''
-    This code was created by Luis Kabongo, Vicomtech-IK4 Copyright 2012-2013.
-    Modified by Ander Arbelaiz to add gradient calculation.\n
-    Information links:
-    https://github.com/VolumeRC/AtlasConversionScripts/wiki
-    http://www.volumerc.org
-    http://demos.vicomtech.org
-    Contact mailto:volumerendering@vicomtech.org''',
+                                     description='''
+DICOM Atlas generation utility
+------------------------------\n
+
+This application converts the slices found in a folder into a tiled 2D texture
+image in DICOM format.\nIt uses Python with PIL, numpy and pydicom packages are recommended for other formats.
+\n
+Note: this version does not process several folders recursively.''',
+                                 epilog='''
+This code was created by Luis Kabongo, Vicomtech-IK4 Copyright 2012-2013.
+Modified by Ander Arbelaiz to add gradient calculation.\n
+Information links:
+ - https://github.com/VolumeRC/AtlasConversionScripts/wiki
+ - http://www.volumerc.org
+ - http://demos.vicomtech.org
+Contact mailto:volumerendering@vicomtech.org''',
                                      formatter_class=RawTextHelpFormatter)
     parser.add_argument('input', type=str, help='must contain a path to one set of DICOM files to be processed')
     parser.add_argument('output', type=str,
