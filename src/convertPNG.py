@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # coding=utf-8
 import os
+import sys
 import errno
 import math
 import argparse
@@ -34,10 +35,6 @@ def decr(x, y):
     return x - y
 
 
-def div(x, y):
-    return x / y
-
-
 # Normalize values between [0-1]
 def normalize(block):
     old_min = delayed(block.min())
@@ -45,7 +42,7 @@ def normalize(block):
     r = delayed(decr)(old_max, old_min)
     minimum = old_min.compute()
     t0 = decr(block, minimum)
-    return div(t0, r.compute()), -minimum/r.compute()
+    return t0/r.compute(), -minimum/r.compute()
 
 
 # Calculate derivatives function
@@ -232,7 +229,10 @@ def listdir_fullpath(d):
 def main():
     # Define th CLI
     parser = argparse.ArgumentParser(prog='PNG Atlas Generator',
-                                     description='''PNG Atlas generation utility\n
+                                     description='''
+PNG Atlas generation utility
+----------------------------\n
+
 This application converts the slices found in a folder into a tiled 2D texture
 image in PNG format.\nIt uses Python with PIL, numpy and pydicom packages are recommended for other formats.
 \n
@@ -241,9 +241,9 @@ Note: this version does not process several folders recursively.''',
 This code was created by Luis Kabongo, Vicomtech-IK4 Copyright 2012-2013.
 Modified by Ander Arbelaiz to add gradient calculation.\n
 Information links:
-https://github.com/VolumeRC/AtlasConversionScripts/wiki
-http://www.volumerc.org
-http://demos.vicomtech.org
+ - https://github.com/VolumeRC/AtlasConversionScripts/wiki
+ - http://www.volumerc.org
+ - http://demos.vicomtech.org
 Contact mailto:volumerendering@vicomtech.org''',
                                      formatter_class=RawTextHelpFormatter)
     parser.add_argument('input', type=str, help='must contain a path to one set of PNG files to be processed')
@@ -321,4 +321,4 @@ Contact mailto:volumerendering@vicomtech.org''',
     write_versions(imgTile, gradientTile, arguments.output)
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
