@@ -1,17 +1,19 @@
 #!/usr/bin/env python
 # coding=utf-8
-print """
-This code was created by Luis Kabongo, Vicomtech-IK4 Copyright 2012-2013.
-This application converts the slices found in a folder into a tiled 2D texture 
-image in PNG format (it assumes all files in the folder are of the same type 
-and dimensions). It uses Python with PIL, numpy and pydicom packages are 
-recommended for other formats.
-Information links:
-http://www.volumerc.org
-http://demos.vicomtech.org
-Code was inspired by: https://github.com/nopjia/WebGL-Volumetric/blob/master/stitching/stitch.py
-Contact mailto:volumerendering@vicomtech.org
-"""
+#
+# Copyright 2012 Vicomtech-IK4
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import os, errno
 import sys
@@ -228,12 +230,13 @@ Note1: RAW Support may require adaptation, check values for sizeOfRaw and rawByt
 Note2: this version does not process several RAW folders recursively.
 ''',
                                      epilog='''
-This code was created by Luis Kabongo, Vicomtech-IK4 Copyright 2012-2013.
+This code was created by Luis Kabongo.
 Modified by Ander Arbelaiz to add gradient calculation.\n
 Information links:
  - https://github.com/VolumeRC/AtlasConversionScripts/wiki
  - http://www.volumerc.org
  - http://demos.vicomtech.org
+Code was inspired by: https://github.com/nopjia/WebGL-Volumetric/blob/master/stitching/stitch.py
 Contact mailto:volumerendering@vicomtech.org''',
                                      formatter_class=RawTextHelpFormatter)
     parser.add_argument('input', type=str, help='must contain only one set of RAW files to be processed')
