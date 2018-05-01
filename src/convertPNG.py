@@ -23,6 +23,7 @@ import argparse
 from argparse import RawTextHelpFormatter
 from multiprocessing import cpu_count
 import tempfile
+from itertools import izip_longest
 # this is required to manage the images
 try:
     from PIL import Image
@@ -43,6 +44,20 @@ def load_png(filename):
     if im.mode != 1:
         return im.convert("L", palette=Image.ADAPTIVE, colors=256)
     return im
+
+
+def grouper(iterable, n, fillvalue=None):
+    """Collect data into fixed-length chunks or blocks"""
+    # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx"
+    args = [iter(iterable)] * n
+    return izip_longest(*args, fillvalue=fillvalue)
+
+
+def grouper_with_repeat(iterable, n, fillvalue=None):
+    """Collect data into fixed-length chunks or blocks"""
+    # grouper('ABCDEFG', 3, 'x') --> ABCD DEFG Gxxx"
+    args = [iter(iterable)] * n + [iter([iterable[i] for i in range(n, len(iterable), n)])]
+    return izip_longest(*args, fillvalue=fillvalue)
 
 
 # Simple decrement function
@@ -114,29 +129,56 @@ def read_image(filename, load_img_func=load_png, r_width=None, r_height=None):
     return im
 
 
-# This function uses the images retrieved with loadImgFunction (whould return a PIL.Image) and
+# This function uses the images retrieved with loadImgFunction (returns a PIL.Image) and
 # writes them as tiles within a new square Image.
 # Returns a set of Image, size of a slice, number of slices and number of slices per axis
 def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False, r_width=None, r_height=None):
     filenames = sorted(filenames)
     print "Desired load function=", loadImgFunction.__name__
     size = read_image(filenames[0], loadImgFunction, r_width, r_height).size
+    channel_option = "r"
     numberOfSlices = len(filenames)
-    slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlices)))
-    imout = Image.new("L", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
 
-    i = 0
-    for filename in filenames:
-        im = read_image(filename, loadImgFunction, r_width, r_height)
+    if "r" == channel_option:  # Single channel
+        slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlices)))
+        imout = Image.new("L", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
 
-        row = int((math.floor(i / slicesPerAxis)) * size[0])
-        col = int((i % slicesPerAxis) * size[1])
+        i = 0
+        for filename in filenames:
+            im = read_image(filename, loadImgFunction, r_width, r_height)
+            row = int((math.floor(i / slicesPerAxis)) * size[0])
+            col = int((i % slicesPerAxis) * size[1])
+            box = (int(col), int(row), int(col + size[0]), int(row + size[1]))
+            imout.paste(im, box)
+            i += 1
+            print "processed slice  : " + str(i) + "/" + str(numberOfSlices)  # filename
+    elif "r+g" == channel_option:
+        slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlices)))
+        imout = Image.new("RG", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
+        len_channels = 1
 
-        box = (int(col), int(row), int(col + size[0]), int(row + size[1]))
-        imout.paste(im, box)
-
-        i += 1
-        print "processed slice  : " + str(i) + "/" + str(numberOfSlices)  # filename
+        i = 0
+        for files in grouper_with_repeat(filenames, 1):
+            idx = int(math.floor(i / len_channels))
+            im = Image.merge("RGB", [read_image(image, loadImgFunction, r_width, r_height) for image in files])
+            row = int((math.floor(idx / slicesPerAxis)) * size[0])
+            col = int((idx % slicesPerAxis) * size[1])
+            box = (int(col), int(row), int(col + size[0]), int(row + size[1]))
+            imout.paste(im, box)
+            i += 1
+            print "processed slice  : " + str(i) + "/" + str(numberOfSlices)  # filename
+    elif "rg+a" == channel_option:
+        numberOfSlicesPerChannel = int(math.ceil(numberOfSlices/2))
+        slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlicesPerChannel)))
+        imout = Image.new("RGB", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
+    elif "rgb+a" == channel_option:
+        numberOfSlicesPerChannel = int(math.ceil(numberOfSlices/3))
+        slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlicesPerChannel)))
+        imout = Image.new("RGBA", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
+    elif "rgba" == channel_option:
+        numberOfSlicesPerChannel = int(math.ceil(numberOfSlices/4))
+        slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlicesPerChannel)))
+        imout = Image.new("RGBA", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
 
     gradient = None
     if cGradient:
@@ -271,6 +313,8 @@ Contact mailto:volumerendering@vicomtech.org''',
                         help='calculate and generate the gradient atlas')
     parser.add_argument('--standard_deviation', '-std', type=int, default=2,
                         help='standard deviation for the gaussian kernel used for the gradient computation')
+    parser.add_argument('--channels', '-ch', type=str, default="r",
+                        help='disposition of slices along atlas color channels')
 
     # Obtain the parsed arguments
     print "Parsing arguments..."
