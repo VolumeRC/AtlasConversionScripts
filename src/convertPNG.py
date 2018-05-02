@@ -136,49 +136,49 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False,
     filenames = sorted(filenames)
     print "Desired load function=", loadImgFunction.__name__
     size = read_image(filenames[0], loadImgFunction, r_width, r_height).size
-    channel_option = "r"
+    channel_option = "rgba"
     numberOfSlices = len(filenames)
 
+    _grouper = grouper
+
     if "r" == channel_option:  # Single channel
-        slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlices)))
-        imout = Image.new("L", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
-
-        i = 0
-        for filename in filenames:
-            im = read_image(filename, loadImgFunction, r_width, r_height)
-            row = int((math.floor(i / slicesPerAxis)) * size[0])
-            col = int((i % slicesPerAxis) * size[1])
-            box = (int(col), int(row), int(col + size[0]), int(row + size[1]))
-            imout.paste(im, box)
-            i += 1
-            print "processed slice  : " + str(i) + "/" + str(numberOfSlices)  # filename
-    elif "r+g" == channel_option:
-        slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlices)))
-        imout = Image.new("RG", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
         len_channels = 1
-
-        i = 0
-        for files in grouper_with_repeat(filenames, 1):
-            idx = int(math.floor(i / len_channels))
-            im = Image.merge("RGB", [read_image(image, loadImgFunction, r_width, r_height) for image in files])
-            row = int((math.floor(idx / slicesPerAxis)) * size[0])
-            col = int((idx % slicesPerAxis) * size[1])
-            box = (int(col), int(row), int(col + size[0]), int(row + size[1]))
-            imout.paste(im, box)
-            i += 1
-            print "processed slice  : " + str(i) + "/" + str(numberOfSlices)  # filename
-    elif "rg+a" == channel_option:
-        numberOfSlicesPerChannel = int(math.ceil(numberOfSlices/2))
-        slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlicesPerChannel)))
-        imout = Image.new("RGB", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
+        image_mode = "L"
+    elif "r+g" == channel_option:
+        len_channels = 1
+        image_mode = "RGB"
+        _grouper = grouper_with_repeat
+    elif "rg+b" == channel_option:
+        len_channels = 2
+        image_mode = "RGB"
+        _grouper = grouper_with_repeat
     elif "rgb+a" == channel_option:
-        numberOfSlicesPerChannel = int(math.ceil(numberOfSlices/3))
-        slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlicesPerChannel)))
-        imout = Image.new("RGBA", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
+        len_channels = 3
+        image_mode = "RGBA"
+        _grouper = grouper_with_repeat
     elif "rgba" == channel_option:
-        numberOfSlicesPerChannel = int(math.ceil(numberOfSlices/4))
-        slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlicesPerChannel)))
-        imout = Image.new("RGBA", (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
+        len_channels = 4
+        image_mode = "RGBA"
+
+    numberOfSlicesPerChannel = int(math.ceil(numberOfSlices / len_channels))
+    slicesPerAxis = int(math.ceil(math.sqrt(numberOfSlicesPerChannel)))
+    imout = Image.new(image_mode, (size[0] * slicesPerAxis, size[1] * slicesPerAxis))
+
+    i = 0
+    for files in _grouper(filenames, len_channels):
+        idx = int(math.floor(i / len_channels))
+        image_stack = []
+        for image in files:
+            image_stack.append(read_image(image, loadImgFunction, r_width, r_height)) if image else Image.new("L", size)
+        while len(image_stack) != len(image_mode):
+            image_stack.append(Image.new("L", size))
+        im = Image.merge(image_mode, image_stack)
+        row = int((math.floor(idx / slicesPerAxis)) * size[0])
+        col = int((idx % slicesPerAxis) * size[1])
+        box = (int(col), int(row), int(col + size[0]), int(row + size[1]))
+        imout.paste(im, box)
+        i += len_channels
+        print "processed slice  : " + str(i) + "/" + str(numberOfSlices)  # filename
 
     gradient = None
     if cGradient:
