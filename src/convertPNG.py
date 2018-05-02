@@ -132,31 +132,34 @@ def read_image(filename, load_img_func=load_png, r_width=None, r_height=None):
 # This function uses the images retrieved with loadImgFunction (returns a PIL.Image) and
 # writes them as tiles within a new square Image.
 # Returns a set of Image, size of a slice, number of slices and number of slices per axis
-def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False, r_width=None, r_height=None):
+def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False, r_width=None, r_height=None,
+                           ch_opt="r"):
     filenames = sorted(filenames)
     print "Desired load function=", loadImgFunction.__name__
     size = read_image(filenames[0], loadImgFunction, r_width, r_height).size
-    channel_option = "rgba"
     numberOfSlices = len(filenames)
 
     _grouper = grouper
 
-    if "r" == channel_option:  # Single channel
+    if "r" == ch_opt:  # Single channel
         len_channels = 1
         image_mode = "L"
-    elif "r+g" == channel_option:
+    elif "r+g" == ch_opt:
         len_channels = 1
         image_mode = "RGB"
         _grouper = grouper_with_repeat
-    elif "rg+b" == channel_option:
+    elif "rg+b" == ch_opt:
         len_channels = 2
         image_mode = "RGB"
         _grouper = grouper_with_repeat
-    elif "rgb+a" == channel_option:
+    elif "rgb" == ch_opt:
+        len_channels = 3
+        image_mode = "RGB"
+    elif "rgb+a" == ch_opt:
         len_channels = 3
         image_mode = "RGBA"
         _grouper = grouper_with_repeat
-    elif "rgba" == channel_option:
+    elif "rgba" == ch_opt:
         len_channels = 4
         image_mode = "RGBA"
 
@@ -320,6 +323,12 @@ Contact mailto:volumerendering@vicomtech.org''',
     print "Parsing arguments..."
     arguments = parser.parse_args()
 
+    # Check for --channels argument
+    valid_channel_arguments = ["r", "r+g", "rg+b", "rgb", "rgb+a", "rgba"]
+    if arguments.channels and arguments.channels not in valid_channel_arguments:
+        msg = '%s: Invalid argument, use one of {%s}' % ("--channels", ", ".join(valid_channel_arguments))
+        raise argparse.ArgumentTypeError(msg)
+
     # Filter only png files in the given folder
     filenames_png = filter(lambda x: ".png" in x, listdir_fullpath(arguments.input))
 
@@ -353,7 +362,8 @@ Contact mailto:volumerendering@vicomtech.org''',
                                                                                                    load_png,
                                                                                                    c_gradient,
                                                                                                    width,
-                                                                                                   height)
+                                                                                                   height,
+                                                                                                   arguments.channels)
 
     # Write a text file containing the number of slices for reference
     try:
