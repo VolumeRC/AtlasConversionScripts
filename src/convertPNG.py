@@ -112,16 +112,31 @@ def make_square_image(im):
         new_background = (0, 0, 0, 0)
     new_resolution = max(width, height)
     offset = ((new_resolution - width) / 2, (new_resolution - height) / 2)
-    t_im = Image.new("L", (new_resolution, new_resolution), new_background)
+    t_im = Image.new(mode, (new_resolution, new_resolution), new_background)
     t_im.paste(im, offset)
     return t_im
 
 
-def read_image(filename, load_img_func=load_png, r_width=None, r_height=None):
+def pad_image(im, pad_x, pad_y):
+    mode = im.mode
+    width, height = im.size
+    new_background = 0  # L, 1
+    if len(mode) == 3:  # RGB
+        new_background = (0, 0, 0)
+    if len(mode) == 4:  # RGBA, CMYK
+        new_background = (0, 0, 0, 0)
+    t_im = Image.new(im.mode, (width+(pad_x*2), height+pad_y*2), new_background)
+    t_im.paste(im, (pad_x, pad_y))
+    return t_im
+
+
+def read_image(filename, load_img_func=load_png, r_width=None, r_height=None, pad_x=0, pad_y=0):
     # Load the image
     im = load_img_func(filename)
     # Perform resize if required
     im = resize_image(im, r_width, r_height)
+    # Perform padding if required
+    im = pad_image(im, pad_x, pad_y)
     # Create an square image if required
     width, height = im.size
     if width != height:
@@ -132,11 +147,12 @@ def read_image(filename, load_img_func=load_png, r_width=None, r_height=None):
 # This function uses the images retrieved with loadImgFunction (returns a PIL.Image) and
 # writes them as tiles within a new square Image.
 # Returns a set of Image, size of a slice, number of slices and number of slices per axis
-def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False, r_width=None, r_height=None,
-                           ch_opt="r"):
+def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False, r_width=None, r_height=None, pad_x=0,
+                           pad_y=0, ch_opt="r"):
     filenames = sorted(filenames)
+    print filenames[0]
     print "Desired load function=", loadImgFunction.__name__
-    size = read_image(filenames[0], loadImgFunction, r_width, r_height).size
+    size = read_image(filenames[0], loadImgFunction, r_width, r_height, pad_x, pad_y).size
     numberOfSlices = len(filenames)
 
     _grouper = grouper
@@ -172,7 +188,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False,
         idx = int(math.floor(i / len_channels))
         image_stack = []
         for image in files:
-            image_stack.append(read_image(image, loadImgFunction, r_width, r_height)) if image else Image.new("L", size)
+            image_stack.append(read_image(image, loadImgFunction, r_width, r_height, pad_x, pad_y)) if image else Image.new("L", size)
         while len(image_stack) != len(image_mode):
             image_stack.append(Image.new("L", size))
         im = Image.merge(image_mode, image_stack)
@@ -186,7 +202,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False,
     gradient = None
     if cGradient:
         print "Starting to compute the gradient: Loading the data..."
-        image_list = [da.from_array(np.array(read_image(f, loadImgFunction, r_width, r_height),
+        image_list = [da.from_array(np.array(read_image(f, loadImgFunction, r_width, r_height, pad_x, pad_y),
                                              dtype='uint8'), chunks=size) for f in filenames]
         data = da.stack(image_list, axis=-1)
         cpus = cpu_count()
@@ -243,7 +259,7 @@ def ImageSlices2TiledImage(filenames, loadImgFunction=load_png, cGradient=False,
 # It also writes several versions in different sizes determined by dimensions
 def write_versions(tileImage, tileGradient, outputFilename, dimensions=None):
     if dimensions is None:
-        dimensions = [8192, 4096, 2048, 1024, 512]
+        dimensions = [16384, 8192, 4096, 2048, 1024, 512]
     try:
         print 'Creating folder', os.path.dirname(outputFilename), '...',
         os.makedirs(os.path.dirname(outputFilename))
@@ -257,9 +273,9 @@ def write_versions(tileImage, tileGradient, outputFilename, dimensions=None):
 
     print "Writing complete image: " + outputFilename + "_full.png"
     try:
-        tileImage.save(outputFilename + "_full.png", "PNG")
+        tileImage.save(outputFilename + "_full.png", "PNG", optimize=False, compress_level=0)
         if tileGradient:
-            tileGradient.save(outputFilename + "_gradient_full.png", "PNG")
+            tileGradient.save(outputFilename + "_gradient_full.png", "PNG", optimize=False, compress_level=0)
     except:
         print "Failed writing ", outputFilename + "_full.png"
     for dim in dimensions:
@@ -267,13 +283,13 @@ def write_versions(tileImage, tileGradient, outputFilename, dimensions=None):
             print "Writing " + str(dim) + "x" + str(dim) + " version: " + outputFilename + "_" + str(dim) + ".png"
             try:
                 tmpImage = tileImage.resize((dim, dim))
-                tmpImage.save(outputFilename + "_" + str(dim) + ".png", "PNG")
+                tmpImage.save(outputFilename + "_" + str(dim) + ".png", "PNG", optimize=False, compress_level=0)
             except:
                 print "Failed writing ", outputFilename, "_", str(dim), ".png"
             if tileGradient:
                 try:
                     tmpImage = tileGradient.resize((dim, dim))
-                    tmpImage.save(outputFilename + "_gradient_" + str(dim) + ".png", "PNG")
+                    tmpImage.save(outputFilename + "_gradient_" + str(dim) + ".png", "PNG", optimize=False, compress_level=0)
                 except:
                     print "Failed writing ", outputFilename, "_gradient_", str(dim), ".png"
 
@@ -312,6 +328,8 @@ Contact mailto:volumerendering@vicomtech.org''',
                              'extension will be added automatically')
     parser.add_argument('--resize', '-r', type=int, nargs=2, metavar=('x', 'y'),
                         help='resizing of the input images x y, before processing')
+    parser.add_argument('--padding', '-p', type=int, nargs=2, metavar=('x', 'y'),
+                        help='Add padding in pixels to the images on x  and y axis, before processing')
     parser.add_argument('--gradient', '-g', action='store_true',
                         help='calculate and generate the gradient atlas')
     parser.add_argument('--standard_deviation', '-std', type=int, default=2,
@@ -341,6 +359,8 @@ Contact mailto:volumerendering@vicomtech.org''',
     else:
         width, height = None, None
 
+    pad_x, pad_y = (arguments.padding[0], arguments.padding[1]) if arguments.padding else (0, 0)
+
     # Update global value for standard_deviation
     sigmaValue = arguments.standard_deviation
 
@@ -363,6 +383,8 @@ Contact mailto:volumerendering@vicomtech.org''',
                                                                                                    c_gradient,
                                                                                                    width,
                                                                                                    height,
+                                                                                                   pad_x,
+                                                                                                   pad_y,
                                                                                                    arguments.channels)
 
     # Write a text file containing the number of slices for reference
